@@ -7,6 +7,10 @@
 #include <TelnetStream.h>
 #include <IPAddress.h>
 
+#include <map>
+
+std::map<String, String> sessionMap;
+
 ESP8266WebServer server(80);
 
 const int onPin = 0;
@@ -25,6 +29,9 @@ enum ComputerState { COMPUTER_OFF,
                      COMPUTER_ASLEEP };
 ComputerState computerState;
 
+//For cookie
+String currentSessionId = "";
+
 String newIp = "2";
 String oldIp = "1";
 String asciiArt;
@@ -33,7 +40,7 @@ WiFiClient client;
 HTTPClient http;
 
 void setup() {
-  Serial.begin(115200);
+  TelnetStream.begin(115200);
 
   pinMode(onPin, INPUT);
   pinMode(switchPin, OUTPUT);
@@ -42,7 +49,7 @@ void setup() {
   WiFi.begin(ssid, password);
 
   if (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    Serial.println("WiFi Connect Failed! Rebooting...");
+    TelnetStream.println("WiFi Connect Failed! Rebooting...");
     delay(1000);
     ESP.restart();
   }
@@ -61,36 +68,38 @@ void setup() {
 
   server.begin();
 
-  Serial.println("Starting...");
+  TelnetStream.println("Starting...");
 }
 
 bool is_authenticated() {
-  Serial.println("Enter is_authenticated");
   if (server.hasHeader("Cookie")) {
-    Serial.print("Found cookie: ");
     String cookie = server.header("Cookie");
-    Serial.println(cookie);
-    if (cookie.indexOf("ESPSESSIONID=1") != -1) {
-      Serial.println("Authentication Successful");
+    String clientIP = server.client().remoteIP().toString();
+  if (sessionMap.count(clientIP) && cookie.indexOf("ESPSESSIONID=" + sessionMap[clientIP]) != -1) {
+      TelnetStream.println("Authentication Successful");
       return true;
     }
   }
-  Serial.println("Authentication Failed");
+  TelnetStream.println("Authentication Failed");
   return false;
 }
+
 
 void handleLogin() {
   String msg;
   if (server.hasHeader("Cookie")) {
-    Serial.print("Found cookie: ");
+    TelnetStream.print("Found cookie: ");
     String cookie = server.header("Cookie");
-    Serial.println(cookie);
+    TelnetStream.println(cookie);
   }
   if (server.hasArg("DISCONNECT")) {
-    Serial.println("Disconnection");
+    TelnetStream.println("Disconnection");
+    String clientIP = server.client().remoteIP().toString();
+    sessionMap.erase(clientIP);
+    currentSessionId = "";
     server.sendHeader("Location", "/login");
     server.sendHeader("Cache-Control", "no-cache");
-    server.sendHeader("Set-Cookie", "ESPSESSIONID=0");
+    server.sendHeader("Set-Cookie", "ESPSESSIONID=0; Max-Age=0; HttpOnly");
     server.send(301);
     return;
   }
@@ -98,13 +107,17 @@ void handleLogin() {
     if (server.arg("USERNAME") == www_username && server.arg("PASSWORD") == www_password) {
       server.sendHeader("Location", "/");
       server.sendHeader("Cache-Control", "no-cache");
-      server.sendHeader("Set-Cookie", "ESPSESSIONID=1");
+      String clientIP = server.client().remoteIP().toString();
+      currentSessionId = String(random(100000, 999999));
+      sessionMap[clientIP] = currentSessionId;
+      server.sendHeader("Set-Cookie", "ESPSESSIONID=" + currentSessionId + "; HttpOnly");
       server.send(301);
-      Serial.println("Log in Successful");
+      TelnetStream.println("Log in Successful");
       return;
     }
     msg = "Wrong username/password! try again.";
-    Serial.println("Log in Failed");
+    TelnetStream.println("Log in Failed");
+    server.sendHeader("Set-Cookie", "ESPSESSIONID=0; Max-Age=0; HttpOnly");
   }
 
   String content = "<html><body><form action='/login' method='POST'>To log in, please enter credentials:<br>"
@@ -295,7 +308,7 @@ void updateDDNS(String myIp) {
         TelnetStream.println(payload);
         oldIp = myIp;
       } else {
-        Serial.println("Error on sending GET request for " + myDomains[i]);
+        TelnetStream.println("Error on sending GET request for " + myDomains[i]);
       }
     }
 
